@@ -40,13 +40,12 @@ git clone https://github.com/g1ibby/helix-zellij-nav.git
 cd helix-zellij-nav
 
 # Build with optimizations
-export HELIX_DEFAULT_RUNTIME=/usr/lib/helix/runtime
 cargo build --profile opt --locked
 
 # Install (adjust paths as needed for your system)
-sudo mkdir -p /usr/lib/helix/
-sudo cp -r runtime /usr/lib/helix/
-sudo cp target/opt/hx /usr/bin/hx
+mkdir -p /usr/local/lib/helix
+cp -r runtime /usr/local/lib/helix/
+cp target/opt/hx /usr/local/bin/hx
 ```
 ## Configuration
 
@@ -107,7 +106,7 @@ This fork follows a specific maintenance strategy to stay in sync with upstream 
 
 *   The `main` branch tracks the upstream Helix repository.
 *   The `zellij-integration` branch contains our Zellij navigation feature.
-*   Regular updates from upstream are merged into `main` and then rebased into `zellij-integration`.
+*   Regular updates from upstream are merged into `master` and then rebased into `zellij-integration`.
 
 This ensures that you always have access to the latest Helix features and bug fixes while maintaining the Zellij integration.
 
