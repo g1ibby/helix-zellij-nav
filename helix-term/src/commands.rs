@@ -1,6 +1,7 @@
 pub(crate) mod dap;
 pub(crate) mod lsp;
 pub(crate) mod typed;
+pub(crate) mod zellij;
 
 pub use dap::*;
 use futures_util::FutureExt;
@@ -16,6 +17,7 @@ use tui::{
     widgets::Cell,
 };
 pub use typed::*;
+pub use zellij::*;
 
 use helix_core::{
     char_idx_at_visual_offset,
@@ -527,6 +529,10 @@ impl MappableCommand {
         jump_view_left, "Jump to left split",
         jump_view_up, "Jump to split above",
         jump_view_down, "Jump to split below",
+        jump_view_right_zj, "Jump to right split (zellij)",
+        jump_view_left_zj, "Jump to left split (zellij)",
+        jump_view_up_zj, "Jump to split above (zellij)",
+        jump_view_down_zj, "Jump to split below (zellij)",
         swap_view_right, "Swap with right split",
         swap_view_left, "Swap with left split",
         swap_view_up, "Swap with split above",
