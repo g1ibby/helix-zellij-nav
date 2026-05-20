@@ -1,7 +1,10 @@
 [
   "[QueryStringParams]"
+  "[Query]"
   "[FormParams]"
+  "[Form]"
   "[MultipartFormData]"
+  "[Multipart]"
   "[Cookies]"
   "[Captures]"
   "[Asserts]"
@@ -20,7 +23,7 @@
 (quoted_string) @string
 (json_string) @string
 (file_value) @string.special.path
-(regex) @string.regex
+(regex) @string.regexp
 
 [
   "\\"
@@ -116,6 +119,9 @@
   "isBoolean"
   "isString"
   "isCollection"
+  "isNumber"
+  "isIsoDate"
+  "isEmpty"
 ] @keyword.operator
 
 (integer) @constant.numeric.integer

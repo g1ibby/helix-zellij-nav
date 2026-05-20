@@ -90,7 +90,13 @@ pub fn highlighted_code_block<'a>(
         if pos == start {
             continue;
         }
-        assert!(pos > start);
+        // The highlighter should always move forward.
+        // If the highlighter malfunctions, bail on syntax highlighting and log an error.
+        debug_assert!(pos > start);
+        if pos < start {
+            log::error!("Failed to highlight '{language}': {text:?}");
+            return styled_multiline_text(text, code_style);
+        }
 
         let style = syntax_highlight_stack
             .iter()
@@ -300,7 +306,7 @@ impl Markdown {
                             &self.config_loader.load(),
                             None,
                         );
-                        lines.extend(tui_text.lines.into_iter());
+                        lines.extend(tui_text.lines);
                     } else {
                         let style = match tags.last() {
                             Some(Tag::Heading { level, .. }) => match level {
