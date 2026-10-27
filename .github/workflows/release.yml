@@ -173,11 +173,12 @@ jobs:
           mv "$APP-$VERSION-$ARCH.AppImage" \
               "$APP-$VERSION-$ARCH.AppImage.zsync" dist
 
+      # Fork fix: the latest prebuilt cargo-deb requires GLIBC 2.39 but the
+      # x86_64-linux runner is pinned to ubuntu-22.04 (GLIBC 2.35), so build
+      # cargo-deb from source instead of using taiki-e/install-action.
       - name: Install cargo-deb
         if: matrix.build == 'x86_64-linux'
-        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-deb
+        run: cargo install cargo-deb --locked
 
       - name: Build Deb
         shell: bash
