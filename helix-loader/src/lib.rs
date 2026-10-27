@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 
 pub const VERSION_AND_GIT_HASH: &str = env!("VERSION_AND_GIT_HASH");
 
-static RUNTIME_DIRS: once_cell::sync::Lazy<Vec<PathBuf>> =
-    once_cell::sync::Lazy::new(prioritize_runtime_dirs);
+static RUNTIME_DIRS: std::sync::LazyLock<Vec<PathBuf>> =
+    std::sync::LazyLock::new(prioritize_runtime_dirs);
 
-static CONFIG_FILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+static CONFIG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-static LOG_FILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+static LOG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 pub fn initialize_config_file(specified_file: Option<PathBuf>) {
     let config_file = specified_file.unwrap_or_else(default_config_file);
@@ -162,14 +162,6 @@ pub fn lang_config_file() -> PathBuf {
 
 pub fn default_log_file() -> PathBuf {
     cache_dir().join("helix.log")
-}
-
-pub fn workspace_trust_file() -> PathBuf {
-    data_dir().join("trusted_workspaces")
-}
-
-pub fn workspace_exclude_file() -> PathBuf {
-    data_dir().join("excluded_workspaces")
 }
 
 /// Merge two TOML documents, merging values from `right` onto `left`

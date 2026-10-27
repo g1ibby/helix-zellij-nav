@@ -11,11 +11,11 @@ use crossterm::{
         Attribute as CAttribute, Color as CColor, Colors, Print, SetAttribute, SetBackgroundColor,
         SetColors, SetForegroundColor,
     },
-    terminal::{self, Clear, ClearType},
+    terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate},
     Command,
 };
 use helix_view::graphics::{Color, CursorKind, Modifier, Rect, UnderlineStyle};
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 use std::{
     fmt,
     io::{self, Write},
@@ -99,7 +99,7 @@ pub struct CrosstermBackend<W: Write> {
     buffer: W,
     config: Config,
     capabilities: Capabilities,
-    supports_keyboard_enhancement_protocol: OnceCell<bool>,
+    supports_keyboard_enhancement_protocol: OnceLock<bool>,
     mouse_capture_enabled: bool,
     supports_bracketed_paste: bool,
 }
@@ -117,7 +117,7 @@ where
             buffer,
             capabilities: Capabilities::from_env_or_default(&config),
             config,
-            supports_keyboard_enhancement_protocol: OnceCell::new(),
+            supports_keyboard_enhancement_protocol: OnceLock::new(),
             mouse_capture_enabled: false,
             supports_bracketed_paste: true,
         }
@@ -291,7 +291,7 @@ where
     }
 
     fn hide_cursor(&mut self) -> io::Result<()> {
-        execute!(self.buffer, Hide)
+        queue!(self.buffer, Hide)
     }
 
     fn show_cursor(&mut self, kind: CursorKind) -> io::Result<()> {
@@ -301,15 +301,23 @@ where
             CursorKind::Underline => SetCursorStyle::SteadyUnderScore,
             CursorKind::Hidden => unreachable!(),
         };
-        execute!(self.buffer, Show, shape)
+        queue!(self.buffer, Show, shape)
     }
 
     fn set_cursor(&mut self, x: u16, y: u16) -> io::Result<()> {
-        execute!(self.buffer, MoveTo(x, y))
+        queue!(self.buffer, MoveTo(x, y))
     }
 
     fn clear(&mut self) -> io::Result<()> {
-        execute!(self.buffer, Clear(ClearType::All))
+        queue!(self.buffer, Clear(ClearType::All))
+    }
+
+    fn start_sync(&mut self) -> io::Result<()> {
+        queue!(self.buffer, BeginSynchronizedUpdate)
+    }
+
+    fn end_sync(&mut self) -> io::Result<()> {
+        queue!(self.buffer, EndSynchronizedUpdate)
     }
 
     fn size(&self) -> io::Result<Rect> {
