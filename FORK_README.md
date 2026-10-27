@@ -33,7 +33,7 @@ This fork makes minimal changes to the Helix codebase:
 
 ### From a release (recommended)
 
-Prebuilt binaries for Linux (x86_64, aarch64), macOS (x86_64, aarch64) and Windows (x86_64, aarch64) are published on the [Releases page](https://github.com/g1ibby/helix-zellij-nav/releases). Download the archive for your platform, extract it, and put `hx` on your `PATH` with the bundled `runtime` directory next to it. Linux AppImage and `.deb` packages are also included.
+Prebuilt binaries for Linux (x86_64, aarch64) and macOS (x86_64, aarch64) are published on the [Releases page](https://github.com/g1ibby/helix-zellij-nav/releases). Download the archive for your platform, extract it, and put `hx` on your `PATH` with the bundled `runtime` directory next to it. Linux AppImage and `.deb` packages are also included. No Windows builds are published — Zellij targets Unix terminals.
 
 Fork releases are tagged `<upstream tag>-zj<N>` (for example `25.07.1-zj1`): the prefix is the upstream Helix version the release is based on, and `N` increments for fork-only re-releases off the same upstream version. `hx --version` reports the upstream version plus the fork commit hash.
 
