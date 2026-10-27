@@ -1,9 +1,12 @@
 name: Release
 on:
+  workflow_dispatch:
   push:
     tags:
     - '[0-9]+.[0-9]+'
     - '[0-9]+.[0-9]+.[0-9]+'
+    - '[0-9]+.[0-9]+-zj[0-9]+'
+    - '[0-9]+.[0-9]+.[0-9]+-zj[0-9]+'
     branches:
     - 'patch/ci-release-*'
   pull_request:
@@ -21,8 +24,8 @@ env:
   # Preview mode: Publishes the build output as a CI artifact instead of creating
   # a release, allowing for manual inspection of the output. This mode is
   # activated if the CI run was triggered by events other than pushed tags, or
-  # if the repository is a fork.
-  preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'helix-editor/helix' }}
+  # if the repository is not this fork.
+  preview: ${{ !startsWith(github.ref, 'refs/tags/') || github.repository != 'g1ibby/helix-zellij-nav' }}
 
 jobs:
   fetch-grammars:
@@ -143,7 +146,7 @@ jobs:
           export ARCH=${build%-linux}
           export APP=helix
           export OUTPUT="helix-$VERSION-$ARCH.AppImage"
-          export UPDATE_INFORMATION="gh-releases-zsync|$GITHUB_REPOSITORY_OWNER|helix|latest|$APP-*-$ARCH.AppImage.zsync"
+          export UPDATE_INFORMATION="gh-releases-zsync|$GITHUB_REPOSITORY_OWNER|helix-zellij-nav|latest|$APP-*-$ARCH.AppImage.zsync"
 
           mkdir -p "$APP.AppDir"/usr/{bin,lib/helix}
 
@@ -242,7 +245,7 @@ jobs:
               fi
               pkgname=helix-$tag-$platform
               mkdir -p $pkgname
-              cp $source/LICENSE $source/README.md $pkgname
+              cp $source/LICENSE $source/README.md $source/FORK_README.md $pkgname
               mkdir $pkgname/contrib
               cp -r $source/contrib/completion $pkgname/contrib
               mv bins-$platform/runtime $pkgname/

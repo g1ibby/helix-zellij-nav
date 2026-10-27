@@ -31,7 +31,16 @@ This fork makes minimal changes to the Helix codebase:
 
 ## Installation
 
-To install this fork:
+### From a release (recommended)
+
+Prebuilt binaries for Linux (x86_64, aarch64), macOS (x86_64, aarch64) and Windows (x86_64, aarch64) are published on the [Releases page](https://github.com/g1ibby/helix-zellij-nav/releases). Download the archive for your platform, extract it, and put `hx` on your `PATH` with the bundled `runtime` directory next to it. Linux AppImage and `.deb` packages are also included.
+
+Fork releases are tagged `<upstream tag>-zj<N>` (for example `25.07.1-zj1`): the prefix is the upstream Helix version the release is based on, and `N` increments for fork-only re-releases off the same upstream version. `hx --version` reports the upstream version plus the fork commit hash.
+
+This is a community fork of [Helix](https://github.com/helix-editor/helix), distributed under the MPL-2.0 license (see `LICENSE`, bundled in every release archive). It is not an official Helix release — please file fork-specific issues in this repository, not upstream.
+
+### From source
+
 ```bash
 # Make sure you've removed any existing Helix installation
 
@@ -109,6 +118,17 @@ This fork follows a specific maintenance strategy to stay in sync with upstream 
 *   Regular updates from upstream are merged into `master` and then rebased into `zellij-integration`.
 
 This ensures that you always have access to the latest Helix features and bug fixes while maintaining the Zellij integration.
+
+### Cutting a fork release
+
+From the `zellij-integration` branch:
+
+```bash
+git tag -s -a 25.07.1-zj1 -m "25.07.1-zj1"
+git push origin 25.07.1-zj1
+```
+
+The tag triggers the Release workflow, which builds all platforms and publishes the GitHub Release. Do not edit `workspace.package.version` in `Cargo.toml` — it tracks upstream. To test the pipeline first, run the Release workflow manually (Actions → Release → Run workflow); it uploads the archives as a `release` artifact instead of publishing.
 
 ## Contributing
 
