@@ -5,8 +5,11 @@ on:
     tags:
     - '[0-9]+.[0-9]+'
     - '[0-9]+.[0-9]+.[0-9]+'
+    # GitHub tag filters are globs: `+` matches only the previous char, so
+    # `[0-9]+` allows at most two digits — `25.07.1-zj1` (three in `07.1`)
+    # needs the explicit patterns below.
     - '[0-9]+.[0-9]+-zj[0-9]+'
-    - '[0-9]+.[0-9]+.[0-9]+-zj[0-9]+'
+    - '[0-9]+.[0-9]+.[0-9]-zj[0-9]+'
     branches:
     - 'patch/ci-release-*'
   pull_request:
