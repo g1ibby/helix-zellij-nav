@@ -168,6 +168,7 @@ pub struct Document {
     workspace_root: OnceLock<PathBuf>,
     encoding: &'static encoding::Encoding,
     has_bom: bool,
+    lossy_decode: bool,
 
     pub restore_cursor: bool,
 
@@ -462,12 +463,21 @@ fn apply_bom(encoding: &'static encoding::Encoding, buf: &mut [u8; BUF_SIZE]) ->
 // its sibling function, `to_writer()`.
 //
 /// Decodes a stream of bytes into UTF-8, returning a `Rope` and the
-/// encoding it was decoded as with BOM information. The optional `encoding`
-/// parameter can be used to override encoding auto-detection.
+/// encoding it was decoded as with BOM information, and whether any bytes were invalid (and
+/// replaced with U+FFFD). The optional `encoding` parameter can be used to override encoding
+/// auto-detection.
 pub fn from_reader<R: std::io::Read + ?Sized>(
     reader: &mut R,
     encoding: Option<&'static Encoding>,
-) -> Result<(Rope, &'static Encoding, bool), io::Error> {
+) -> Result<(Rope, &'static Encoding, bool, bool), io::Error> {
+    if encoding.is_none() {
+        // Detect from the whole file, not just the first chunk.
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        let encoding = detect_encoding(&bytes, true);
+        return from_reader(&mut bytes.as_slice(), Some(encoding));
+    }
+
     // These two buffers are 8192 bytes in size each and are used as
     // intermediaries during the decoding process. Text read into `buf`
     // from `reader` is decoded into `buf_out` as UTF-8. Once either
@@ -499,6 +509,7 @@ pub fn from_reader<R: std::io::Read + ?Sized>(
     // contain valid UTF-8.
     let buf_str = unsafe { std::str::from_utf8_unchecked_mut(&mut buf_out[..]) };
     let mut total_written = 0usize;
+    let mut lossy = false;
     loop {
         let mut total_read = 0usize;
 
@@ -507,7 +518,7 @@ pub fn from_reader<R: std::io::Read + ?Sized>(
         // which would happen in cases where the output buffer is filled to
         // capacity.
         loop {
-            let (result, read, written, ..) = decoder.decode_to_str(
+            let (result, read, written, replaced) = decoder.decode_to_str(
                 &slice[total_read..],
                 &mut buf_str[total_written..],
                 is_empty,
@@ -519,6 +530,7 @@ pub fn from_reader<R: std::io::Read + ?Sized>(
             // the data inside the output buffer would be overwritten.
             total_read += read;
             total_written += written;
+            lossy |= replaced;
             match result {
                 encoding::CoderResult::InputEmpty => {
                     debug_assert_eq!(slice.len(), total_read);
@@ -548,7 +560,7 @@ pub fn from_reader<R: std::io::Read + ?Sized>(
         is_empty = read == 0;
     }
     let rope = builder.finish();
-    Ok((rope, encoding, has_bom))
+    Ok((rope, encoding, has_bom, lossy))
 }
 
 pub fn read_to_string<R: std::io::Read + ?Sized>(
@@ -612,22 +624,29 @@ fn read_and_detect_encoding<R: std::io::Read + ?Sized>(
     buf: &mut [u8],
 ) -> Result<(&'static Encoding, bool, encoding::Decoder, usize), io::Error> {
     let read = reader.read(buf)?;
-    let is_empty = read == 0;
-    let (encoding, has_bom) = encoding
-        .map(|encoding| (encoding, false))
-        .or_else(|| encoding::Encoding::for_bom(buf).map(|(encoding, _bom_size)| (encoding, true)))
-        .unwrap_or_else(|| {
-            let mut encoding_detector =
-                chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
-            encoding_detector.feed(buf, is_empty);
-            (
-                encoding_detector.guess(None, chardetng::Utf8Detection::Allow),
-                false,
-            )
-        });
-    let decoder = encoding.new_decoder();
+    let buf = &buf[..read];
+    let encoding = encoding.unwrap_or_else(|| detect_encoding(buf, read == 0));
+    // Only strip a BOM that matches the encoding.
+    let has_bom = Encoding::for_bom(buf).is_some_and(|(bom, _)| bom == encoding);
+    let decoder = if has_bom {
+        encoding.new_decoder_with_bom_removal()
+    } else {
+        encoding.new_decoder_without_bom_handling()
+    };
 
     Ok((encoding, has_bom, decoder, read))
+}
+
+fn detect_encoding(buf: &[u8], last: bool) -> &'static Encoding {
+    Encoding::for_bom(buf).map_or_else(
+        || {
+            let mut encoding_detector =
+                chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Allow);
+            encoding_detector.feed(buf, last);
+            encoding_detector.guess(None, chardetng::Utf8Detection::Allow)
+        },
+        |(encoding, _bom_size)| encoding,
+    )
 }
 
 // The documentation and implementation of this function should be up-to-date with
@@ -738,6 +757,7 @@ impl Document {
             workspace_root: OnceLock::new(),
             encoding,
             has_bom,
+            lossy_decode: false,
             text,
             selections: HashMap::default(),
             inlay_hints: HashMap::default(),
@@ -811,7 +831,7 @@ impl Document {
         encoding = encoding.or(editor_config.encoding);
 
         // Open the file if it exists, otherwise assume it is a new file (and thus empty).
-        let (rope, encoding, has_bom) = if path.exists() {
+        let (rope, encoding, has_bom, lossy_decode) = if path.exists() {
             let mut file = std::fs::File::open(path)?;
             from_reader(&mut file, encoding)?
         } else {
@@ -819,11 +839,12 @@ impl Document {
                 .line_ending
                 .unwrap_or_else(|| config.load().default_line_ending.into());
             let encoding = encoding.unwrap_or(encoding::UTF_8);
-            (Rope::from(line_ending.as_str()), encoding, false)
+            (Rope::from(line_ending.as_str()), encoding, false, false)
         };
 
         let loader = syn_loader.load();
         let mut doc = Self::from(rope, Some((encoding, has_bom)), config, syn_loader);
+        doc.lossy_decode = lossy_decode;
 
         // set the path and try detecting the language
         doc.set_path(Some(path));
@@ -844,7 +865,7 @@ impl Document {
         editor: &Editor,
     ) -> Option<BoxFuture<'static, Result<Transaction, FormatterError>>> {
         if self.language_config()?.auto_format {
-            self.format(editor)
+            self.format_with(editor, false)
         } else {
             None
         }
@@ -857,6 +878,16 @@ impl Document {
     pub fn format(
         &self,
         editor: &Editor,
+    ) -> Option<BoxFuture<'static, Result<Transaction, FormatterError>>> {
+        self.format_with(editor, true)
+    }
+
+    /// Like [`Document::format`], but without a formatter the document is only re-indented if
+    /// `reindent` is set. Formatting on save doesn't re-indent.
+    fn format_with(
+        &self,
+        editor: &Editor,
+        reindent: bool,
     ) -> Option<BoxFuture<'static, Result<Transaction, FormatterError>>> {
         if let Some((fmt_cmd, fmt_args)) = self
             .language_config()
@@ -947,36 +978,55 @@ impl Document {
         };
 
         let text = self.text.clone();
-        // finds first language server that supports formatting and then formats
-        let language_server = self
+        if let Some(language_server) = self
             .language_servers_with_feature(LanguageServerFeature::Format)
-            .next()?;
-        let offset_encoding = language_server.offset_encoding();
-        let request = language_server.text_document_formatting(
-            self.identifier(),
-            lsp::FormattingOptions {
-                tab_size: self.tab_width() as u32,
-                insert_spaces: matches!(self.indent_style, IndentStyle::Spaces(_)),
-                ..Default::default()
-            },
-            None,
-        )?;
+            .next()
+        {
+            let offset_encoding = language_server.offset_encoding();
+            if let Some(request) = language_server.text_document_formatting(
+                self.identifier(),
+                lsp::FormattingOptions {
+                    tab_size: self.tab_width() as u32,
+                    insert_spaces: matches!(self.indent_style, IndentStyle::Spaces(_)),
+                    ..Default::default()
+                },
+                None,
+            ) {
+                let fut = async move {
+                    let edits = request
+                        .await
+                        .unwrap_or_else(|e| {
+                            log::warn!("LSP formatting failed: {}", e);
+                            Default::default()
+                        })
+                        .unwrap_or_default();
+                    Ok(helix_lsp::util::generate_transaction_from_edits(
+                        &text,
+                        edits,
+                        offset_encoding,
+                    ))
+                };
+                return Some(fut.boxed());
+            }
+        }
 
-        let fut = async move {
-            let edits = request
-                .await
-                .unwrap_or_else(|e| {
-                    log::warn!("LSP formatting failed: {}", e);
-                    Default::default()
-                })
-                .unwrap_or_default();
-            Ok(helix_lsp::util::generate_transaction_from_edits(
-                &text,
-                edits,
-                offset_encoding,
-            ))
-        };
-        Some(fut.boxed())
+        if !reindent {
+            return None;
+        }
+        // Without a formatter, fix the indentation using the indent query.
+        let syntax = self.syntax.as_ref()?;
+        let loader = self.syn_loader.load_full();
+        let query = loader.indent_query(syntax.root_language())?;
+        let changes = helix_core::indent::treesitter_format_changes(
+            query,
+            syntax,
+            &loader,
+            &self.indent_style,
+            self.tab_width(),
+            text.slice(..),
+        );
+        let transaction = helix_core::Transaction::change(&text, changes.into_iter());
+        Some(async move { Ok(transaction) }.boxed())
     }
 
     pub fn save<P: Into<PathBuf>>(
@@ -1011,6 +1061,13 @@ impl Document {
         // we clone and move text + path into the future so that we asynchronously save the current
         // state without blocking any further edits.
         let text = self.text().clone();
+
+        if self.lossy_decode && !force {
+            bail!(
+                "invalid {} bytes were replaced with U+FFFD; use :w! to save anyway",
+                self.encoding.name()
+            );
+        }
 
         let path = match path {
             Some(path) => helix_stdx::path::canonicalize(path),
@@ -1298,7 +1355,9 @@ impl Document {
         self.detect_readonly();
 
         let mut file = std::fs::File::open(&path)?;
-        let (rope, ..) = from_reader(&mut file, Some(encoding))?;
+        let (rope, _, has_bom, lossy_decode) = from_reader(&mut file, Some(encoding))?;
+        self.has_bom = has_bom;
+        self.lossy_decode = lossy_decode;
 
         // Calculate the difference between the buffer and source text, and apply it.
         // This is not considered a modification of the contents of the file regardless
@@ -1697,8 +1756,6 @@ impl Document {
         if success {
             // reset changeset to fix len
             self.changes = ChangeSet::new(self.text().slice(..));
-            // Sync with changes with the jumplist selections.
-            view.sync_changes(self);
         }
         success
     }
@@ -1784,8 +1841,6 @@ impl Document {
         if success {
             // reset changeset to fix len
             self.changes = ChangeSet::new(self.text().slice(..));
-            // Sync with changes with the jumplist selections.
-            view.sync_changes(self);
         }
         success
     }
@@ -1819,9 +1874,6 @@ impl Document {
         let mut history = self.history.take();
         history.commit_revision(&transaction, &old_state);
         self.history.set(history);
-
-        // Update jumplist entries in the view.
-        view.apply(&transaction, self);
     }
 
     pub fn id(&self) -> DocumentId {
@@ -1860,6 +1912,7 @@ impl Document {
         );
         self.last_saved_revision = rev;
         self.last_saved_time = save_time;
+        self.lossy_decode = false;
     }
 
     /// Get the document's latest saved revision.
@@ -1869,10 +1922,34 @@ impl Document {
 
     /// Get the current revision number
     pub fn get_current_revision(&mut self) -> usize {
+        self.current_revision()
+    }
+
+    pub(crate) fn current_revision(&self) -> usize {
         let history = self.history.take();
         let current_revision = history.current_revision();
         self.history.set(history);
         current_revision
+    }
+
+    /// Maps a selection of the text at history revision `revision` to the current text.
+    pub(crate) fn map_selection_from_revision(
+        &self,
+        selection: &Selection,
+        revision: usize,
+    ) -> Selection {
+        let history = self.history.take();
+        let committed = (history.current_revision() != revision)
+            .then(|| history.changes_since(revision))
+            .flatten();
+        self.history.set(history);
+        let mut selection = selection.clone();
+        if let Some(committed) = committed {
+            selection = selection.map(committed.changes());
+        }
+        selection
+            .map(&self.changes)
+            .ensure_invariants(self.text.slice(..))
     }
 
     /// Corresponding language scope name. Usually `source.<lang>`.
@@ -2704,6 +2781,24 @@ mod test {
             .to_string(),
             helix_core::NATIVE_LINE_ENDING.as_str()
         );
+    }
+
+    #[test]
+    fn detect_encoding_past_first_read() {
+        let mut bytes = b"a\n".repeat(BUF_SIZE);
+        bytes.extend(b"caf\xe9\n");
+        let (rope, encoding, ..) = from_reader(&mut bytes.as_slice(), None).unwrap();
+        assert_eq!(encoding, encoding::WINDOWS_1252);
+        assert!(rope.to_string().ends_with("café\n"));
+    }
+
+    #[test]
+    fn forced_encoding_keeps_foreign_bom_as_text() {
+        let utf8_bom = "\u{feff}é".as_bytes();
+        let (rope, _, has_bom, _) =
+            from_reader(&mut &utf8_bom[..], Some(encoding::WINDOWS_1252)).unwrap();
+        assert_eq!(rope, "ï»¿Ã©");
+        assert!(!has_bom);
     }
 
     macro_rules! decode {

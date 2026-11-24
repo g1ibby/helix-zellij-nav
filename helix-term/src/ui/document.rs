@@ -1,7 +1,7 @@
-use std::cmp::min;
+use std::{borrow::Cow, cmp::min};
 
 use helix_core::doc_formatter::{DocumentFormatter, FormattedGrapheme, GraphemeSource, TextFormat};
-use helix_core::graphemes::Grapheme;
+use helix_core::graphemes::{render_grapheme, Grapheme};
 use helix_core::str_utils::char_to_byte_idx;
 use helix_core::syntax::{self, HighlightEvent, Highlighter, OverlayHighlights};
 use helix_core::text_annotations::TextAnnotations;
@@ -348,14 +348,16 @@ impl<'a> TextRenderer<'a> {
             Grapheme::Tab { width } => {
                 is_tab = true;
                 let grapheme_tab_width = char_to_byte_idx(tab, width);
-                &tab[..grapheme_tab_width]
+                Cow::Borrowed(&tab[..grapheme_tab_width])
             }
             // TODO special rendering for other whitespaces?
-            Grapheme::Other { ref g } if g == " " && !grapheme.source.is_eof() => space,
-            Grapheme::Other { ref g } if g == "\u{00A0}" => nbsp,
-            Grapheme::Other { ref g } if g == "\u{202F}" => nnbsp,
-            Grapheme::Other { ref g } => g,
-            Grapheme::Newline => &self.newline,
+            Grapheme::Other { ref g } if g == " " && !grapheme.source.is_eof() => {
+                Cow::Borrowed(space)
+            }
+            Grapheme::Other { ref g } if g == "\u{00A0}" => Cow::Borrowed(nbsp),
+            Grapheme::Other { ref g } if g == "\u{202F}" => Cow::Borrowed(nnbsp),
+            Grapheme::Other { ref g } => render_grapheme(g),
+            Grapheme::Newline => Cow::Borrowed(self.newline.as_str()),
         };
 
         let in_bounds = self.column_in_bounds(position.col, width);
@@ -369,9 +371,9 @@ impl<'a> TextRenderer<'a> {
                 // across the whole tab and avoids the redraw diff clipping
                 // `render-whitespace` pads. A single `set_grapheme` would pack
                 // them into one wide cell and leave the rest unstyled.
-                self.surface.set_tab(x, y, grapheme, style);
+                self.surface.set_tab(x, y, &grapheme, style);
             } else {
-                self.surface.set_grapheme(x, y, grapheme, width, style);
+                self.surface.set_grapheme(x, y, &grapheme, width, style);
             }
         } else if cut_off_start != 0 && cut_off_start < width {
             // partially on screen
@@ -422,33 +424,33 @@ impl<'a> TextRenderer<'a> {
         }
     }
 
+    /// The surface row of row `y` of the text area, or `None` if it is scrolled out of view.
+    fn surface_row(&self, y: u16) -> Option<u16> {
+        let row = (y as usize).checked_sub(self.offset.row)?;
+        Some(row as u16 + self.viewport.y)
+    }
+
     pub fn set_string(&mut self, x: u16, y: u16, string: &str, style: Style) {
-        if (y as usize) < self.offset.row {
-            return;
+        if let Some(y) = self.surface_row(y) {
+            self.surface.set_string(x, y, string, style)
         }
-        let y = y - self.offset.row as u16;
-        self.surface
-            .set_string(x, y + self.viewport.y, string, style)
     }
 
     pub fn set_stringn(&mut self, x: u16, y: u16, string: &str, width: usize, style: Style) {
-        if (y as usize) < self.offset.row {
-            return;
+        if let Some(y) = self.surface_row(y) {
+            self.surface.set_stringn(x, y, string, width, style);
         }
-        let y = y - self.offset.row as u16;
-        self.surface
-            .set_stringn(x, y + self.viewport.y, string, width, style);
     }
 
     /// Sets the style of an area **within the text viewport* this accounts
     /// both for the renderers vertical offset and its viewport
     pub fn set_style(&mut self, mut area: Rect, style: Style) {
-        let offset = self.offset.row as u16;
-        if area.y < offset {
-            area.height = area.height.saturating_sub(offset - area.y);
-            area.y = offset;
-        }
-        area.y = area.y - offset + self.viewport.y;
+        let top = area.y.max(self.offset.row as u16);
+        area.height = area.bottom().saturating_sub(top);
+        let Some(y) = self.surface_row(top) else {
+            return;
+        };
+        area.y = y;
         self.surface.set_style(area, style);
     }
 
@@ -463,13 +465,12 @@ impl<'a> TextRenderer<'a> {
         ellipsis: bool,
         truncate_start: bool,
     ) -> (u16, u16) {
-        if (y as usize) < self.offset.row {
+        let Some(surface_y) = self.surface_row(y) else {
             return (x, y);
-        }
-        let y = y - self.offset.row as u16;
+        };
         self.surface.set_string_truncated(
             x,
-            y + self.viewport.y,
+            surface_y,
             string,
             width,
             style,

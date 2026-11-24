@@ -1744,7 +1744,7 @@ indent = { tab-width = 2, unit = "  " }
 
 [[grammar]]
 name = "haskell"
-source = { git = "https://github.com/tree-sitter/tree-sitter-haskell", rev = "0975ef72fc3c47b530309ca93937d7d143523628" }
+source = { git = "https://github.com/tree-sitter/tree-sitter-haskell", rev = "97288e585b0bd44199720280d067fa35bacd81ff" }
 
 [[language]]
 name = "haskell-persistent"
@@ -3524,7 +3524,7 @@ grammar = "qmljs"
 
 [[grammar]]
 name = "qmljs"
-source = { git = "https://github.com/yuja/tree-sitter-qmljs", rev = "0b2b25bcaa7d4925d5f0dda16f6a99c588a437f1" }
+source = { git = "https://github.com/yuja/tree-sitter-qmljs", rev = "de96ed62abded51fcdfcbeaaa120e0dd0d20c697" }
 
 [[language]]
 name = "mermaid"

@@ -419,11 +419,7 @@ fn write_impl(
     let tail = (auto_format || run_code_actions).then(|| {
         let path = path.clone();
         let callback = Callback::Followup(Box::new(move |editor| {
-            // The document could have been closed mid-chain
-            if !editor.documents.contains_key(&doc_id) {
-                return None;
-            }
-            let doc = doc!(editor, &doc_id);
+            let doc = editor.documents.get(&doc_id)?;
             let fmt_job = auto_format
                 .then(|| doc.auto_format(editor))
                 .flatten()
@@ -918,11 +914,7 @@ pub fn write_all_impl(
         // built when there is pre-save work; otherwise a synchronous save below.
         let tail = (auto_format || run_code_actions).then(|| {
             let callback: job::Callback = Callback::Followup(Box::new(move |editor| {
-                // The document could have been closed mid-chain
-                if !editor.documents.contains_key(&doc_id) {
-                    return None;
-                }
-                let doc = doc!(editor, &doc_id);
+                let doc = editor.documents.get(&doc_id)?;
                 let fmt_job = auto_format
                     .then(|| doc.auto_format(editor))
                     .flatten()
@@ -1087,8 +1079,10 @@ fn cquit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
         .and_then(|code| code.parse::<i32>().ok())
         .unwrap_or(1);
 
+    // Set the code after quitting, otherwise a failed :cq can make :q! fail with the wrong exit code
+    quit_all_impl(cx, false)?;
     cx.editor.exit_code = exit_code;
-    quit_all_impl(cx, false)
+    Ok(())
 }
 
 fn force_cquit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -1635,9 +1629,6 @@ fn reload_all(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
         // Every doc is guaranteed to have at least 1 view at this point.
         let view = view_mut!(cx.editor, view_ids[0]);
 
-        // Ensure that the view is synced with the document's history.
-        view.sync_changes(doc);
-
         // Per-document trust: each doc's workspace may differ.
         let trust_full = cx
             .editor
@@ -1662,13 +1653,6 @@ fn reload_all(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
         for view_id in view_ids {
             let view = view_mut!(cx.editor, view_id);
             if view.doc.eq(&doc_id) {
-                // Reloading commits the diff against disk through the first view
-                // only (above). Any other view onto this document is left
-                // pointing at the pre-reload revision, so sync it now; otherwise
-                // its jumplist entries keep referencing the old (e.g. larger)
-                // text and a later commit panics when mapping them through a
-                // changeset whose pre-image no longer contains them.
-                view.sync_changes(doc);
                 view.ensure_cursor_in_view(doc, scrolloff);
             }
         }
@@ -2137,7 +2121,14 @@ fn debug_eval(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
 
         // TODO: support no frame_id
 
-        let frame_id = debugger.stack_frames[&thread_id][frame].id;
+        let Some(frame_id) = debugger
+            .stack_frames
+            .get(&thread_id)
+            .and_then(|frames| frames.get(frame))
+            .map(|frame| frame.id)
+        else {
+            bail!("No stack frame {frame} for thread {thread_id}");
+        };
         let response = helix_lsp::block_on(debugger.eval(args.join(" "), Some(frame_id)))?;
         cx.editor.set_status(response.result);
     }
@@ -2244,7 +2235,7 @@ pub(super) fn goto_line_number(
                 .expect("update_goto_line_number_preview should always set last_selection");
 
             let (view, doc) = current!(cx.editor);
-            view.push_jump(doc, (doc.id(), last_selection));
+            view.push_jump_to(doc, last_selection);
         }
 
         // When a user hits backspace and there are no numbers left,
@@ -2343,6 +2334,7 @@ fn toggle_option(
                 .map(|res| res.map(|token| token.content))
                 .collect::<Result<_, _>>()
                 .map_err(|err| anyhow!("failed to parse values: {err}"))?;
+            ensure!(!values.is_empty(), "No values given for `{key}`");
 
             Value::String(
                 values
@@ -2372,6 +2364,7 @@ fn toggle_option(
                 .into_iter()
                 .collect::<Result<_, _>>()
                 .map_err(|err| anyhow!("failed to parse value: {err}"))?;
+            ensure!(!values.is_empty(), "No values given for `{key}`");
 
             if let Some(wrongly_typed_value) = values
                 .iter()
@@ -2496,14 +2489,24 @@ fn reflow(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
         .unwrap_or_else(|| doc.text_width());
 
     let rope = doc.text();
+    let comment_tokens: Vec<&str> = doc
+        .language_config()
+        .and_then(|config| config.comment_tokens.as_deref())
+        .map(|tokens| tokens.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    let options = helix_core::wrap::ReflowOptions {
+        text_width,
+        tab_width: doc.tab_width(),
+        line_ending: doc.line_ending.as_str(),
+        comment_tokens: &comment_tokens,
+    };
 
-    let selection = doc.selection(view.id);
-    let transaction = Transaction::change_by_selection(rope, selection, |range| {
-        let fragment = range.fragment(rope.slice(..));
-        let reflowed_text = helix_core::wrap::reflow_hard_wrap(&fragment, text_width);
-
-        (range.from(), range.to(), Some(reflowed_text))
-    });
+    let changes: Vec<_> = doc
+        .selection(view.id)
+        .line_ranges(rope.slice(..))
+        .flat_map(|(start, end)| helix_core::wrap::reflow(rope.slice(..), start, end, &options))
+        .collect();
+    let transaction = Transaction::change(rope, changes.into_iter());
 
     doc.apply(&transaction, view.id);
     doc.append_changes_to_history(view);
@@ -2842,6 +2845,8 @@ fn move_buffer_impl(
         .map(ToOwned::to_owned)
         .context("Scratch buffer cannot be moved. Use :write instead")?;
 
+    // A bare file name has an empty parent, and `~` has to be expanded before it is checked.
+    let new_path = helix_stdx::path::canonicalize(new_path);
     // if new_path is a directory, append the original file name
     // to move the file into that directory.
     let new_path = old_path
@@ -2862,6 +2867,15 @@ fn move_buffer_impl(
                 }
             }
         }
+    }
+
+    // A case-only rename on a case-insensitive filesystem names the same file, so compare
+    // file identity rather than paths.
+    if !options.force
+        && new_path.symlink_metadata().is_ok()
+        && !same_file::is_same_file(&old_path, &new_path).unwrap_or(false)
+    {
+        bail!("can't move file, destination exists (use :mv! to overwrite it)");
     }
 
     if let Err(err) = cx.editor.move_path(&old_path, new_path.as_ref()) {
@@ -4166,12 +4180,17 @@ pub(super) fn execute_command(
 
 #[allow(clippy::unnecessary_unwrap)]
 pub(super) fn command_mode(cx: &mut Context) {
+    // Keep the register selected before `:` (as in `"a:yank-join`) for the typed command.
+    let register = cx.register;
     let mut prompt = Prompt::new(
         ":".into(),
         Some(':'),
         complete_command_line,
         move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
-            if let Err(err) = execute_command_line(cx, input, event) {
+            cx.editor.selected_register = register;
+            let res = execute_command_line(cx, input, event);
+            cx.editor.selected_register = None;
+            if let Err(err) = res {
                 cx.editor.set_error(err.to_string());
             }
         },

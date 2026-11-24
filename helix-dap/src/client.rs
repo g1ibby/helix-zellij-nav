@@ -106,7 +106,10 @@ impl Client {
         addr: std::net::SocketAddr,
         id: DebugAdapterId,
     ) -> Result<(Self, UnboundedReceiver<(DebugAdapterId, Payload)>)> {
-        let stream = TcpStream::connect(addr).await?;
+        // `start_client` blocks the UI, so keep a shorter timeout
+        let stream = time::timeout(time::Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+            .map_err(|_| anyhow!("timed out connecting to {addr}"))??;
         let (rx, tx) = stream.into_split();
         Self::streams(Box::new(BufReader::new(rx)), Box::new(tx), None, id, None)
     }
@@ -383,6 +386,7 @@ impl Client {
             supports_memory_references: Some(false),
             supports_progress_reporting: Some(true),
             supports_invalidated_event: Some(false),
+            supports_start_debugging_request: Some(true),
         };
 
         let response = self.request::<requests::Initialize>(args).await?;
